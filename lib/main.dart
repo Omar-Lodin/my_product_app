@@ -121,7 +121,8 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       setState(() {
-        _authError = 'Authentication failed: ${e.message} (${e.code}) Please Try again.';
+        _authError =
+            'Authentication failed: ${e.message} (${e.code}) Please Try again.';
       });
     } finally {
       if (mounted) {
@@ -135,7 +136,7 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title:  Text(_isRegistering ? 'Register' : 'Sign In')),
+      appBar: AppBar(title: Text(_isRegistering ? 'Register' : 'Sign In')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Form(
@@ -146,8 +147,8 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
                 decoration: const InputDecoration(labelText: 'Email'),
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
-                validator: (value) { 
-                  final email =value?.trim() ?? '';
+                validator: (value) {
+                  final email = value?.trim() ?? '';
                   if (email.isEmpty) {
                     return 'Email is required';
                   }
@@ -166,7 +167,7 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
                   if (password.isEmpty) {
                     return 'Password is required';
                   }
-                  if (_isRegistering &&password.length < 6) {
+                  if (_isRegistering && password.length < 6) {
                     return 'Password must be at least 6 characters';
                   }
                   return null;
@@ -174,7 +175,9 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
               ),
               if (_isRegistering)
                 TextFormField(
-                  decoration: const InputDecoration(labelText: 'Confirm Password'),
+                  decoration: const InputDecoration(
+                    labelText: 'Confirm Password',
+                  ),
                   controller: _confirmedPasswordController,
                   obscureText: true,
                   validator: (value) {
@@ -199,12 +202,14 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
                     _passwordController.clear();
                     _confirmedPasswordController.clear();
                     _formKey.currentState?.reset();
-                     // Clear error when switching modes
+                    // Clear error when switching modes
                   });
                 },
-                child: Text(_isRegistering
-                    ? 'Already have an account? Sign In'
-                    : 'Don\'t have an account? Register'),
+                child: Text(
+                  _isRegistering
+                      ? 'Already have an account? Sign In'
+                      : 'Don\'t have an account? Register',
+                ),
               ),
             ],
           ),
@@ -221,20 +226,143 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  final _authService = AuthService();
+  bool _signingOut = false;
+  bool _changingPassword = false;
+
+  final _passwordFormKey = GlobalKey<FormState>();
+  final _newPasswordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
+  final _currentPasswordController = TextEditingController();
+
+  @override
+  void dispose() {
+    _newPasswordController.dispose();
+    _confirmPasswordController.dispose();
+    _currentPasswordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _signOut() async {
+    setState(() {
+      _signingOut = true;
+    });
+    try {
+      await _authService.signOut();
+    } catch (e) {
+      debugPrint('Sign out failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sign out failed. Please try again.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _signingOut = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _changePassword() async {
+    if (!_passwordFormKey.currentState!.validate()) return;
+    setState(() {
+      _changingPassword = true;
+    });
+    try {
+      await _authService.changePassword(_newPasswordController.text.trim());
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password changed successfully.')),
+      );
+      _newPasswordController.clear();
+      _confirmPasswordController.clear();
+      _currentPasswordController.clear();
+    } catch (e) {
+      debugPrint('Change password failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Change password failed. Please try again.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _changingPassword = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final user = _authService.currentUser;
     return Scaffold(
       appBar: AppBar(title: const Text('Profile')),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('Welcome! You are signed in.'),
+            Text('Signed in as: ${user?.email ?? 'Unknown'}'),
+            const SizedBox(height: 20),
+            TextFormField(
+              controller: _currentPasswordController,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Current Password'),
+              validator: (value) {
+                final currentPassword = value?.trim() ?? '';
+                if (currentPassword.isEmpty) {
+                  return 'Current password is required to change password';
+                }
+                return null;
+              },
+            ),
+            TextFormField(
+              controller: _newPasswordController,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'New Password'),
+              validator: (value) {
+                final newPassword = value?.trim() ?? '';
+                if (newPassword.isEmpty) {
+                  return 'New password is required';
+                }
+                if (newPassword.length < 6) {
+                  return 'New password must be at least 6 characters long';
+                }
+                return null;
+              },
+            ),
+            TextFormField(
+              controller: _confirmPasswordController,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Confirm Password'),
+              validator: (value) {
+                final confirmPassword = value?.trim() ?? '';
+                final newPassword = _newPasswordController.text.trim();
+                if (confirmPassword.isEmpty) {
+                  return 'Please confirm your new password';
+                }
+                if (confirmPassword != newPassword) {
+                  return 'Passwords do not match';
+                }
+                return null;
+              },
+            ),
+            ElevatedButton(
+              onPressed: _changingPassword ? null : _changePassword,
+              child: Text(_changingPassword ? 'Changing password...' : 'Change Password'),
+            ),
+            ElevatedButton(
+              onPressed: _signingOut ? null : _signOut,
+              child: Text(_signingOut ? 'Signing out...' : 'Sign Out'),
+            ),
+            const SizedBox(height: 20),
             ElevatedButton(
               onPressed: () {
-                AuthService().signOut();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (context) => const ProductPage()),
+                );
               },
-              child: const Text('Sign Out'),
+              child: const Text('Go to Product Manager'),
             ),
           ],
         ),
