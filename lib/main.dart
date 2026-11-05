@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import 'firebase_options.dart';
 
@@ -8,12 +9,238 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(
-    const MaterialApp(
+    MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Autumn Product Manager',
-      home: ProductPage(),
+      home: AuthGate(),
     ),
   );
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(debugShowCheckedModeBanner: false, home: AuthGate());
+  }
+}
+
+class AuthService {
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  Future<UserCredential> register(String email, String password) {
+    return _auth.createUserWithEmailAndPassword(
+      email: email,
+      password: password,
+    );
+  }
+
+  Future<UserCredential> signIn(String email, String password) {
+    return _auth.signInWithEmailAndPassword(email: email, password: password);
+  }
+
+  Future<void> signOut() {
+    return _auth.signOut();
+  }
+
+  late final Stream<User?> authStateChanges = _auth.authStateChanges();
+
+  Future<void> changePassword(String newPassword) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw StateError('A signed-in user is required to change a password.');
+    }
+    await user.updatePassword(newPassword);
+  }
+
+  User? get currentUser => _auth.currentUser;
+}
+
+class AuthGate extends StatelessWidget {
+  AuthGate({super.key});
+
+  final AuthService _authService = AuthService();
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: _authService.authStateChanges,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snapshot.hasError) {
+          return const Scaffold(
+            body: Center(
+              child: Text('Unable to check sign-in status. Try again.'),
+            ),
+          );
+        }
+        if (snapshot.hasData) return const ProfileScreen();
+        return const AuthenticationScreen();
+      },
+    );
+  }
+}
+
+class AuthenticationScreen extends StatefulWidget {
+  const AuthenticationScreen({super.key});
+  @override
+  State<AuthenticationScreen> createState() => _AuthenticationScreenState();
+}
+
+class _AuthenticationScreenState extends State<AuthenticationScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _authService = AuthService();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _confirmedPasswordController = TextEditingController();
+  bool _isRegistering = false;
+  String? _authError;
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmedPasswordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    final email = _emailController.text.trim();
+    final password = _passwordController.text.trim();
+    try {
+      if (_isRegistering) {
+        await _authService.register(email, password);
+      } else {
+        await _authService.signIn(email, password);
+      }
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _authError = 'Authentication failed: ${e.message} (${e.code}) Please Try again.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _authError ??= null; // Clear error if successful
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title:  Text(_isRegistering ? 'Register' : 'Sign In')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              TextFormField(
+                decoration: const InputDecoration(labelText: 'Email'),
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+                validator: (value) { 
+                  final email =value?.trim() ?? '';
+                  if (email.isEmpty) {
+                    return 'Email is required';
+                  }
+                  if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(email)) {
+                    return 'Enter a valid email address with the format \"user@domain.com\"';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                decoration: const InputDecoration(labelText: 'Password'),
+                controller: _passwordController,
+                obscureText: true,
+                validator: (value) {
+                  final password = value?.trim() ?? '';
+                  if (password.isEmpty) {
+                    return 'Password is required';
+                  }
+                  if (_isRegistering &&password.length < 6) {
+                    return 'Password must be at least 6 characters';
+                  }
+                  return null;
+                },
+              ),
+              if (_isRegistering)
+                TextFormField(
+                  decoration: const InputDecoration(labelText: 'Confirm Password'),
+                  controller: _confirmedPasswordController,
+                  obscureText: true,
+                  validator: (value) {
+                    final confirmedPassword = value?.trim() ?? '';
+                    if (confirmedPassword.isEmpty) {
+                      return 'Please confirm your password';
+                    }
+                    if (confirmedPassword != _passwordController.text.trim()) {
+                      return 'Passwords do not match';
+                    }
+                    return null;
+                  },
+                ),
+              ElevatedButton(onPressed: _submit, child: const Text('Continue')),
+              if (_authError != null)
+                Text(_authError!, style: const TextStyle(color: Colors.red)),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _isRegistering = !_isRegistering;
+                    _authError = null;
+                    _passwordController.clear();
+                    _confirmedPasswordController.clear();
+                    _formKey.currentState?.reset();
+                     // Clear error when switching modes
+                  });
+                },
+                child: Text(_isRegistering
+                    ? 'Already have an account? Sign In'
+                    : 'Don\'t have an account? Register'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ProfileScreen extends StatefulWidget {
+  const ProfileScreen({super.key});
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Profile')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('Welcome! You are signed in.'),
+            ElevatedButton(
+              onPressed: () {
+                AuthService().signOut();
+              },
+              child: const Text('Sign Out'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class ProductPage extends StatefulWidget {
@@ -167,7 +394,9 @@ class _ProductPageState extends State<ProductPage> {
                     child: Text('Enter valid numbers for min/max price.'),
                   );
                 }
-                if (minPrice != null && maxPrice != null && minPrice > maxPrice) {
+                if (minPrice != null &&
+                    maxPrice != null &&
+                    minPrice > maxPrice) {
                   return const Center(
                     child: Text('Min price cannot be greater than max price.'),
                   );
@@ -179,7 +408,9 @@ class _ProductPageState extends State<ProductPage> {
                   if (name is! String || price is! num) {
                     return false;
                   }
-                  final matchesName = name.trim().toLowerCase().contains(_searchQuery);
+                  final matchesName = name.trim().toLowerCase().contains(
+                    _searchQuery,
+                  );
                   final matchesMinPrice = minPrice == null || price >= minPrice;
                   final matchesMaxPrice = maxPrice == null || price <= maxPrice;
                   return matchesName && matchesMinPrice && matchesMaxPrice;
