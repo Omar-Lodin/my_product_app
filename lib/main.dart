@@ -46,11 +46,20 @@ class AuthService {
 
   late final Stream<User?> authStateChanges = _auth.authStateChanges();
 
-  Future<void> changePassword(String newPassword) async {
+  Future<void> changePassword(
+    String currentPassword,
+    String newPassword,
+  ) async {
     final user = _auth.currentUser;
-    if (user == null) {
+    final email = user?.email;
+    if (user == null || email == null) {
       throw StateError('A signed-in user is required to change a password.');
     }
+    final credential = EmailAuthProvider.credential(
+      email: email,
+      password: currentPassword,
+    );
+    await user.reauthenticateWithCredential(credential);
     await user.updatePassword(newPassword);
   }
 
@@ -109,6 +118,7 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
   }
 
   Future<void> _submit() async {
+    setState(() => _authError = null);
     if (!_formKey.currentState!.validate()) return;
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
@@ -119,17 +129,36 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
         await _authService.signIn(email, password);
       }
     } on FirebaseAuthException catch (e) {
+      debugPrint('Firebase Auth code: "${e.code}"');
       if (!mounted) return;
       setState(() {
-        _authError =
-            'Authentication failed: ${e.message} (${e.code}) Please Try again.';
+        switch (e.code) {
+          case 'email-already-in-use':
+            _authError = 'Email is already in use. Please sign in.';
+            break;
+          case 'user-not-found':
+            _authError = 'No user found for that email. Please register.';
+            break;
+          case 'invalid-email':
+            _authError = 'Invalid email format. Please check and try again.';
+            break;
+          case 'network-request-failed':
+            _authError = 'Network error. Please check your connection.';
+            break;
+          case 'invalid-credentials':
+            _authError =
+                'Invalid credentials. Please check your email and password.';
+            break;
+          case 'wrong-password':
+            _authError = 'Incorrect password. Please try again.';
+            break;
+          case 'weak-password':
+            _authError = 'Weak password. Please use at least 6 characters.';
+          default:
+            _authError =
+                'Incorrect email/password combination. Please try again.';
+        }
       });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _authError ??= null; // Clear error if successful
-        });
-      }
     }
   }
 
@@ -147,6 +176,11 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
                 decoration: const InputDecoration(labelText: 'Email'),
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
+                onChanged: (_) {
+                  if (_authError != null) {
+                    setState(() => _authError = null);
+                  }
+                },
                 validator: (value) {
                   final email = value?.trim() ?? '';
                   if (email.isEmpty) {
@@ -162,6 +196,11 @@ class _AuthenticationScreenState extends State<AuthenticationScreen> {
                 decoration: const InputDecoration(labelText: 'Password'),
                 controller: _passwordController,
                 obscureText: true,
+                onChanged: (_) {
+                  if (_authError != null) {
+                    setState(() => _authError = null);
+                  }
+                },
                 validator: (value) {
                   final password = value?.trim() ?? '';
                   if (password.isEmpty) {
@@ -234,6 +273,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _newPasswordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   final _currentPasswordController = TextEditingController();
+  String? _currentPasswordError;
 
   @override
   void dispose() {
@@ -265,12 +305,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _changePassword() async {
-    if (!_passwordFormKey.currentState!.validate()) return;
+    //remove below
+
+    //remove above
+    if (_passwordFormKey.currentState!.validate() != true) return;
     setState(() {
       _changingPassword = true;
+      _currentPasswordError = null;
     });
     try {
-      await _authService.changePassword(_newPasswordController.text.trim());
+      await _authService.changePassword(
+        _currentPasswordController.text,
+        _newPasswordController.text,
+      );
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Password changed successfully.')),
@@ -278,11 +326,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _newPasswordController.clear();
       _confirmPasswordController.clear();
       _currentPasswordController.clear();
-    } catch (e) {
-      debugPrint('Change password failed: $e');
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+        setState(() {
+          _currentPasswordError = 'Current password is incorrect';
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Change password failed. '
+              'Check your connection and permissions.',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Change password failed. Please try again.')),
+        const SnackBar(
+          content: Text(
+            'Change password failed. Check your connection and permissions.',
+          ),
+        ),
       );
     } finally {
       if (mounted) {
@@ -299,72 +366,91 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Profile')),
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text('Signed in as: ${user?.email ?? 'Unknown'}'),
-            const SizedBox(height: 20),
-            TextFormField(
-              controller: _currentPasswordController,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'Current Password'),
-              validator: (value) {
-                final currentPassword = value?.trim() ?? '';
-                if (currentPassword.isEmpty) {
-                  return 'Current password is required to change password';
-                }
-                return null;
-              },
-            ),
-            TextFormField(
-              controller: _newPasswordController,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'New Password'),
-              validator: (value) {
-                final newPassword = value?.trim() ?? '';
-                if (newPassword.isEmpty) {
-                  return 'New password is required';
-                }
-                if (newPassword.length < 6) {
-                  return 'New password must be at least 6 characters long';
-                }
-                return null;
-              },
-            ),
-            TextFormField(
-              controller: _confirmPasswordController,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'Confirm Password'),
-              validator: (value) {
-                final confirmPassword = value?.trim() ?? '';
-                final newPassword = _newPasswordController.text.trim();
-                if (confirmPassword.isEmpty) {
-                  return 'Please confirm your new password';
-                }
-                if (confirmPassword != newPassword) {
-                  return 'Passwords do not match';
-                }
-                return null;
-              },
-            ),
-            ElevatedButton(
-              onPressed: _changingPassword ? null : _changePassword,
-              child: Text(_changingPassword ? 'Changing password...' : 'Change Password'),
-            ),
-            ElevatedButton(
-              onPressed: _signingOut ? null : _signOut,
-              child: Text(_signingOut ? 'Signing out...' : 'Sign Out'),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => const ProductPage()),
-                );
-              },
-              child: const Text('Go to Product Manager'),
-            ),
-          ],
+        child: Form(
+          key: _passwordFormKey,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('Signed in as: ${user?.email ?? 'Unknown'}'),
+              const SizedBox(height: 20),
+              TextFormField(
+                controller: _currentPasswordController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Current Password',
+                  errorText: _currentPasswordError,
+                ),
+                onChanged: (_) {
+                  if (_currentPasswordError != null) {
+                    setState(() => _currentPasswordError = null);
+                  }
+                },
+                validator: (value) {
+                  final currentPassword = value?.trim() ?? '';
+                  if (currentPassword.isEmpty) {
+                    return 'Current password is required to change password';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: _newPasswordController,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'New Password'),
+                validator: (value) {
+                  final newPassword = value?.trim() ?? '';
+                  if (newPassword.isEmpty) {
+                    return 'New password is required';
+                  }
+                  if (newPassword.length < 6) {
+                    return 'New password must be at least 6 characters long';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: _confirmPasswordController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Confirm Password',
+                ),
+                validator: (value) {
+                  final confirmPassword = value?.trim() ?? '';
+                  final newPassword = _newPasswordController.text.trim();
+                  if (confirmPassword.isEmpty) {
+                    return 'Please confirm your new password';
+                  }
+                  if (confirmPassword != newPassword) {
+                    return 'Passwords do not match';
+                  }
+                  return null;
+                },
+              ),
+              ElevatedButton(
+                onPressed: _changingPassword ? null : _changePassword,
+                child: Text(
+                  _changingPassword
+                      ? 'Changing password...'
+                      : 'Change Password',
+                ),
+              ),
+              ElevatedButton(
+                onPressed: _signingOut ? null : _signOut,
+                child: Text(_signingOut ? 'Signing out...' : 'Sign Out'),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => const ProductPage(),
+                    ),
+                  );
+                },
+                child: const Text('Go to Product Manager'),
+              ),
+            ],
+          ),
         ),
       ),
     );
